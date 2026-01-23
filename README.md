@@ -1,92 +1,96 @@
-# prospeccao-scraper
+🏗️ Estrutura do Projeto & Organização de Scripts
 
-🎯 OSINT B2B Growth Pipeline
+Este documento define a organização de arquivos do repositório prospeccao-scraper. O objetivo é separar a camada de API (HTTP) da camada de Execução (Browser Automation) para facilitar a manutenção e escalabilidade.
 
-Status: Em Desenvolvimento (Fase 2 - Scraping)
-Objetivo: Pipeline de Engenharia de Dados para enriquecimento de leads B2B e redução de CAC a zero.
+📂 Árvore de Diretórios (Visão Atual e Futura)
 
-Este projeto substitui ferramentas de alto custo (Apollo/ZoomInfo) por uma arquitetura proprietária baseada em OSINT (Open Source Intelligence). O sistema identifica decisores e encontra canais de contato direto (WhatsApp) tornados públicos em redes sociais, operando sob a base legal de Legítimo Interesse B2B.
+prospeccao-scraper/
+├── Dockerfile                  # Receita de construção do container
+├── package.json                # Dependências (Playwright, Express, etc.)
+├── README.md                   # Documentação geral
+│
+└── src/                        # Código Fonte
+    ├── server.js               # Ponto de entrada (Entrypoint).
+    │
+    ├── config/                 # Configurações estáticas
+    │   └── browser.config.js   # Args do Chromium, User-Agents.
+    │
+    ├── core/                   # O "Motor" Compartilhado
+    │   └── browser.js          # Factory do Playwright (usado por LinkedIn e Instagram).
+    │
+    ├── routes/                 # Rotas da API
+    │   ├── linkedin.routes.js
+    │   └── instagram.routes.js # [FUTURO]
+    │
+    ├── controllers/            # Lógica HTTP (Validação e Resposta)
+    │   ├── linkedin.controller.js
+    │   └── instagram.controller.js # [FUTURO]
+    │
+    ├── services/               # Lógica de Negócio (Onde o Scraping acontece)
+    │   ├── linkedin/           # Módulo LinkedIn
+    │   │   ├── search.service.js
+    │   │   └── parser.service.js
+    │   │
+    │   ├── instagram/          # [FUTURO] Módulo Instagram
+    │   │   └── bio.service.js
+    │   │
+    │   └── email/              # [FUTURO] Módulo Email
+    │       └── validator.service.js
+    │
+    └── utils/                  # Funções auxiliares reutilizáveis
+        └── delayer.js          # Funções de delay humano.
 
-📂 Estrutura de Arquivos & Scripts (Inventário)
 
-Abaixo, a lista dos arquivos que compõem este projeto. Verifique se todos estão na sua pasta raiz.
+🧠 Responsabilidade de Cada Módulo
 
-1. Aplicação (/src)
+1. src/server.js
 
-src/server.js (✅ CRIADO): O "cérebro" do robô.
+Função: Apenas inicia o servidor Express, carrega middlewares globais (JSON, Cors) e importa as rotas.
 
-Função 1: API Rest (Express) na porta 3000.
+Regra: Não deve conter lógica de scraping nem configurações do Playwright.
 
-Função 2: POST /api/linkedin/search -> Faz busca no Google (Dorking) para achar perfis sem logar no LinkedIn.
+2. src/core/browser.js
 
-Função 3: POST /api/enrich/instagram -> Busca perfil no Instagram e extrai WhatsApp da Bio/Linktree.
+Função: Gerencia o ciclo de vida do navegador.
 
-2. Infraestrutura (Raiz)
+Responsabilidade: Lançar o Chromium com argumentos anti-detecção e injetar cookies antes da navegação.
 
-Dockerfile (⚠️ PENDENTE DE UPLOAD): A receita para o Easypanel construir o container.
+3. src/services/{plataforma}/
 
-Importante: Deve usar a imagem mcr.microsoft.com/playwright:v1.41.0-jammy.
+Isolamento: Cada plataforma (LinkedIn, Instagram) tem sua pasta. Se o LinkedIn mudar, o Instagram não quebra.
 
-package.json (⚠️ PENDENTE DE UPLOAD): Lista as dependências (playwright, express, stealth).
+Service: Executa a ação no navegador (clicar, digitar, rolar).
 
-🗺 Roadmap de Desenvolvimento
+Parser: Recebe o HTML e extrai os dados (JSON).
 
-Use este checklist para acompanhar o progresso real do projeto.
+📦 Padrão de Módulos (Regra de Ouro)
 
-Fase 1: Infraestrutura (Easypanel & Docker)
+Para evitar erros de compatibilidade (SyntaxError: Cannot use import statement outside a module), este projeto utiliza estritamente o sistema CommonJS.
 
-[x] Criação do Repositório GitHub (prospeccao-scraper).
+❌ NÃO USE (ES Modules - Sintaxe de Frontend/React):
 
-[x] Configuração do .gitignore e LICENSE.
+import express from 'express';
+export default function minhaFuncao() {};
 
-[ ] Ação Necessária: Criar/Subir o arquivo Dockerfile na raiz.
 
-[ ] Ação Necessária: Criar/Subir o arquivo package.json na raiz.
+✅ USE (CommonJS - Padrão Node.js Backend):
 
-[ ] Ação Necessária: Deploy no Easypanel (Serviço deve ficar "Verde/Running").
+const express = require('express');
 
-Fase 2: Microsserviços de Scraping (Node.js)
+// Para exportar funções
+module.exports = {
+    minhaFuncao,
+    outraFuncao
+};
 
-[x] Implementação do servidor Express básico (src/server.js).
+// Para importar funções de outro arquivo
+const { minhaFuncao } = require('../services/linkedin/search.service');
 
-[x] Implementação da busca Google Dorking para LinkedIn (/api/linkedin/search).
 
-[x] Implementação da busca e extração de Bio do Instagram (/api/enrich/instagram).
+🚀 Benefícios desta Estrutura
 
-[ ] Teste manual das rotas (via Postman ou n8n).
+Segurança: O cookie do LinkedIn é manipulado apenas no browser.js, facilitando a proteção desse dado sensível.
 
-Fase 3: Orquestração (n8n)
+Manutenção: Se o LinkedIn mudar o nome da classe CSS dos resultados, você altera apenas o parser.service.js, sem risco de quebrar a conexão com o banco de dados ou a API.
 
-[ ] Configuração do serviço n8n no Easypanel.
-
-[ ] Criação do Workflow: Receber Nome Empresa -> Chamar API LinkedIn -> Chamar API Instagram.
-
-[ ] Integração com Google Sheets para salvar os leads.
-
-🚀 Como Fazer o Deploy (Easypanel)
-
-Garanta que o Dockerfile e package.json estão na raiz deste repositório.
-
-Crie um App no Easypanel do tipo GitHub.
-
-Configurações de Build:
-
-Branch: main
-
-Build Path: /
-
-Configurações de Porta: Exponha a porta 3000.
-
-🛠 Stack Tecnológica
-
-Runtime: Node.js
-
-Browser Automation: Playwright (com plugin puppeteer-extra-plugin-stealth).
-
-API: Express.js
-
-Infra: Docker (Imagem Microsoft Playwright).
-
-⚖️ Aviso Legal
-
-Este software é uma Prova de Conceito (PoC). O uso para spam massivo é desencorajado. O sistema possui delays intencionais para simular navegação humana.
+Escalabilidade: Adicionar o scraper de Instagram é apenas criar uma pasta nova em services/instagram, sem tocar no código do LinkedIn.
