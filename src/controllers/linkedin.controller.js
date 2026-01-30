@@ -1,6 +1,6 @@
 const path = require('path');
 const { runInternalSearch } = require('../services/linkedin/search.service');
-const { parseProfileList } = require('../services/linkedin/parser.service'); // Importação Nova
+const { parseProfileList } = require('../services/linkedin/parser.service');
 
 // 1. Lógica para servir a Interface HTML
 const renderTestInterface = (req, res) => {
@@ -20,7 +20,7 @@ const searchProfiles = async (req, res) => {
     }
 
     try {
-        console.log(`[CONTROLLER] Iniciando busca: ${query.role} @ ${query.company}`);
+        console.log(`[CONTROLLER] Iniciando busca (DEBUG MODE): ${query.role} @ ${query.company}`);
         
         // A. Chama o Robô (Navegação e Extração de HTML)
         const htmlContent = await runInternalSearch(cookie, query);
@@ -32,20 +32,29 @@ const searchProfiles = async (req, res) => {
             });
         }
 
-        // B. Chama o Parser (Transformação HTML -> JSON)
-        // Se o HTML for uma página de erro do LinkedIn, o parser vai retornar array vazio
-        const extractedData = parseProfileList(htmlContent);
+        // B. Tentativa de Parser (Mantemos para ver se funciona, mas o foco agora é coletar o HTML)
+        let extractedData = [];
+        try {
+            extractedData = parseProfileList(htmlContent);
+        } catch (e) {
+            console.warn('[CONTROLLER] Erro no parser (ignorado para debug):', e);
+        }
 
-        // Retorna o resultado JSON limpo
+        // Retorna o resultado com o HTML BRUTO para análise
+        // ATENÇÃO: O campo debug_raw_html conterá todo o código da página
         res.json({
             success: true,
+            mode: 'DEBUG_HTML_DUMP', // Flag para indicar que estamos em modo de coleta
             metadata: {
                 role: query.role,
                 company: query.company,
                 count: extractedData.length,
                 timestamp: new Date().toISOString()
             },
-            data: extractedData // Aqui vai a lista linda de leads
+            // Enviamos o HTML completo para você copiar e me enviar
+            debug_raw_html: htmlContent, 
+            // Mantemos os dados extraídos (se houver) para comparação
+            data: extractedData 
         });
 
     } catch (error) {
