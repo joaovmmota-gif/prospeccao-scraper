@@ -34,16 +34,21 @@ async function runInternalSearch(cookieLiAt, { role, company }) {
         
         // Espera o container de resultados aparecer
         try {
-            await page.waitForSelector('.reusable-search__entity-result-list', { timeout: 15000 });
+            // Aumentei timeout para 20s
+            await page.waitForSelector('.reusable-search__entity-result-list', { timeout: 20000 });
         } catch (e) {
-            // Se não achar lista, pode ser que não haja resultados ou o LinkedIn mudou o layout
-            console.warn('[LINKEDIN] Lista de resultados não encontrada ou vazia.');
-            // Tira um print de erro para debug
-            await page.screenshot({ path: 'erro_busca_vazia.png' });
-            return null;
+            console.warn(`[LINKEDIN] Timeout: Lista de resultados não encontrada. URL atual: ${page.url()}`);
+            
+            // MODIFICAÇÃO DE DEBUG:
+            // Em vez de retornar null, retornamos o HTML da página de erro.
+            // Assim você consegue ver na API se caiu num Captcha ou se não tem resultados.
+            const errorHtml = await page.content();
+            console.warn('[LINKEDIN] Retornando HTML da página atual para diagnóstico.');
+            return errorHtml;
         }
 
         // 4. Scroll Humano para carregar itens (Lazy Load)
+        // Só fazemos o scroll se a lista foi encontrada
         console.log('[LINKEDIN] Rolando página para carregar resultados...');
         await autoScroll(page);
 
