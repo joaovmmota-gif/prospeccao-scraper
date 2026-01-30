@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scraper B2B | Painel de Teste</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; background: #f3f4f6; color: #1f2937; }
+        .card { background: white; padding: 32px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        h2 { color: #0a66c2; margin-top: 0; font-size: 1.5rem; }
+        .form-group { margin-bottom: 16px; }
+        label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.875rem; }
+        input[type="text"] { width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1rem; box-sizing: border-box; transition: border-color 0.15s; }
+        input:focus { outline: none; border-color: #0a66c2; ring: 2px solid #0a66c2; }
+        .row { display: flex; gap: 16px; }
+        .col { flex: 1; }
+        button { background: #0a66c2; color: white; border: none; padding: 14px 20px; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 600; margin-top: 24px; width: 100%; transition: background-color 0.2s; }
+        button:hover { background: #004182; }
+        button:disabled { background: #9ca3af; cursor: not-allowed; }
+        .helper-text { font-size: 0.75rem; color: #6b7280; margin-top: 4px; }
+        #output-area { margin-top: 24px; display: none; }
+        #status-msg { text-align: center; margin-bottom: 12px; font-weight: 500; }
+        pre { background: #111827; color: #e5e7eb; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 0.875rem; border: 1px solid #374151; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🕵️ Interface de Debug (Direct Auth)</h2>
+        <form id="scraperForm">
+            <div class="form-group">
+                <label for="cookie">Cookie de Sessão (li_at)</label>
+                <input type="text" id="cookie" placeholder="Cole o valor AQED..." required autocomplete="off">
+                <div class="helper-text">Pressione F12 -> Application -> Cookies -> https://www.linkedin.com -> li_at</div>
+            </div>
+
+            <div class="row">
+                <div class="col form-group">
+                    <label for="role">Cargo Alvo</label>
+                    <input type="text" id="role" value="CEO" required>
+                </div>
+                <div class="col form-group">
+                    <label for="company">Empresa Alvo</label>
+                    <input type="text" id="company" value="Nubank" required>
+                </div>
+            </div>
+
+            <button type="submit" id="btnAction">🚀 Iniciar Extração</button>
+        </form>
+
+        <div id="output-area">
+            <div id="status-msg"></div>
+            <pre id="json-result"></pre>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('scraperForm');
+        const btn = document.getElementById('btnAction');
+        const statusMsg = document.getElementById('status-msg');
+        const outputArea = document.getElementById('output-area');
+        const jsonResult = document.getElementById('json-result');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            // UI Loading State
+            btn.disabled = true;
+            btn.innerText = '⏳ Processando... (Aguarde 15-30s)';
+            outputArea.style.display = 'block';
+            statusMsg.innerText = 'Iniciando container e navegador...';
+            statusMsg.style.color = '#6b7280';
+            jsonResult.innerText = '';
+
+            const payload = {
+                cookie: document.getElementById('cookie').value,
+                query: {
+                    role: document.getElementById('role').value,
+                    company: document.getElementById('company').value
+                }
+            };
+
+            try {
+                const response = await fetch('/api/v1/linkedin/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    statusMsg.innerText = '✅ Sucesso! Dados extraídos.';
+                    statusMsg.style.color = '#059669';
+                } else {
+                    statusMsg.innerText = '❌ Erro na execução.';
+                    statusMsg.style.color = '#dc2626';
+                }
+
+                jsonResult.innerText = JSON.stringify(data, null, 2);
+
+            } catch (error) {
+                statusMsg.innerText = '❌ Erro de conexão com a API.';
+                statusMsg.style.color = '#dc2626';
+                jsonResult.innerText = error.toString();
+            } finally {
+                btn.disabled = false;
+                btn.innerText = '🚀 Iniciar Extração';
+            }
+        });
+    </script>
+</body>
+</html>
