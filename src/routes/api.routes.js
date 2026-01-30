@@ -12,9 +12,21 @@ router.post('/api/v1/linkedin/search', LinkedinController.searchProfiles);
 // --- E-mail Finder (NOVO) ---
 router.post('/api/v1/email/find', EmailController.findEmail); // Nova Rota
 
-// --- Debug ---
+// --- Debug (Stealth Check) ---
 router.get('/debug/stealth', async (req, res) => {
-    // ... (mantém código anterior) ...
+    let browser = null;
+    try {
+        browser = await startBrowser();
+        const page = await createSession(browser, null);
+        await page.goto('https://bot.sannysoft.com/', { waitUntil: 'networkidle' });
+        const screenshotBuffer = await page.screenshot({ fullPage: true });
+        res.set('Content-Type', 'image/png');
+        res.send(screenshotBuffer);
+    } catch (e) {
+        res.status(500).send(e.message);
+    } finally {
+        if(browser) await browser.close();
+    }
 });
 
 module.exports = router;
