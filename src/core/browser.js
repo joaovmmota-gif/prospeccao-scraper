@@ -29,11 +29,11 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 async function startBrowser() {
     console.log('[BROWSER] Iniciando Chromium em modo Stealth (Hardened)...');
     
+    // REMOVIDO: channel: 'chrome' (causava o erro)
     const browser = await chromium.launch({
         headless: true, 
         args: LAUNCH_ARGS,
         ignoreDefaultArgs: ['--enable-automation'],
-        channel: 'chrome', // Tenta usar o Chrome real se disponível, senão Chromium
     });
 
     return browser;
