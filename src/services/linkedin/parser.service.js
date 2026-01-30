@@ -4,7 +4,7 @@ const cheerio = require('cheerio');
  * Recebe o HTML bruto do LinkedIn e extrai a lista de perfis
  * Baseado na estrutura de classes obfuscadas mas com data-view-name estáveis (2026)
  * @param {string} htmlContent - HTML da página de busca
- * @returns {Array} Lista de objetos com { name, headline, location, url }
+ * @returns {Array} Lista de objetos com { name, headline, location, url, company }
  */
 function parseProfileList(htmlContent) {
     const $ = cheerio.load(htmlContent);
@@ -17,33 +17,22 @@ function parseProfileList(htmlContent) {
         try {
             const el = $(element);
 
-            // 2. Extração do Nome e URL (A ncora principal)
+            // 2. Extração do Nome e URL (Ancora principal)
             const nameLink = el.find('a[data-view-name="search-result-lockup-title"]');
-            
-            // O nome pode estar sujo com quebras de linha, então limpamos
             const name = nameLink.text().replace(/\n/g, '').trim();
             const rawUrl = nameLink.attr('href');
 
-            if (!name || !rawUrl) return; // Pula se não tiver o básico
+            if (!name || !rawUrl) return; 
 
             // 3. Navegação Hierárquica para Cargo e Localização
-            // Estrutura observada:
-            // Container de Texto
-            //   -> p (Nome)
-            //   -> div (Wrapper do Headline) -> p (Texto do Headline)
-            //   -> div (Wrapper da Location) -> p (Texto da Location)
-            
-            // Sobe para o paragrafo do nome, depois para o container de texto pai
             const textContainer = nameLink.closest('div'); 
-            
-            // O Headline costuma ser o texto do primeiro elemento irmão (div) após o nome
-            // Procuramos os 'p' dentro dos 'div' irmãos
             const siblingDivs = textContainer.find('> div');
             
             let headline = 'Não informado';
             let location = 'Não informado';
+            let company = 'Não identificada'; // Novo campo
 
-            // Tenta pegar do primeiro e segundo irmão
+            // Tenta pegar do primeiro e segundo irmão (estrutura padrão)
             if (siblingDivs.length > 0) {
                 headline = $(siblingDivs[0]).find('p').text().trim();
             }
@@ -51,19 +40,48 @@ function parseProfileList(htmlContent) {
                 location = $(siblingDivs[1]).find('p').text().trim();
             }
 
-            // Fallback: Se a estrutura hierárquica falhar, tenta pegar todos os 'p' do container
-            // Geralmente: Index 0=Nome, Index 1=Headline, Index 2=Location
+            // Fallback para Headline/Location se a estrutura falhar
             if (!headline || headline === 'Não informado') {
                 const allParagraphs = textContainer.find('p');
                 if (allParagraphs.length >= 2) headline = $(allParagraphs[1]).text().trim();
                 if (allParagraphs.length >= 3) location = $(allParagraphs[2]).text().trim();
             }
 
+            // 4. Extração Precisa da Empresa (Linha "Atual:")
+            // Varre todos os parágrafos dentro do container de texto deste perfil
+            const allParagraphs = textContainer.find('p');
+            allParagraphs.each((j, p) => {
+                const text = $(p).text().trim();
+                
+                // Procura por linhas que começam com "Atual:" ou "Current:"
+                // Regex: Começa com Atual/Current/Presente, tem algo no meio, depois " na " ou " at ", e captura o resto
+                // Ex: "Atual: CEO na Nubank" -> captura "Nubank"
+                const currentJobMatch = text.match(/^(?:Atual|Current|Presente):.*?\s(?:na|no|em|at)\s+(.*)/i);
+                
+                if (currentJobMatch) {
+                    let rawCompany = currentJobMatch[1].trim();
+                    
+                    // Lógica de Limpeza: Remove texto entre parênteses no final
+                    // Ex: "Hyperplane (acquired by nubank)" -> "Hyperplane"
+                    rawCompany = rawCompany.replace(/\s*\(.*\)$/, '');
+                    
+                    company = rawCompany;
+                    return false; // Para o loop .each assim que achar
+                }
+            });
+
+            // Se não achou a linha "Atual:", tenta pegar do headline se tiver o padrão "Cargo at Empresa"
+            if (company === 'Não identificada' && headline.includes(' at ')) {
+                company = headline.split(' at ').pop().trim();
+            } else if (company === 'Não identificada' && headline.includes(' na ')) {
+                company = headline.split(' na ').pop().trim();
+            }
+
             profiles.push({
                 name,
                 headline,
                 location,
-                // Remove parametros de query da URL para ficar limpa
+                company, // Campo novo e limpo
                 profileUrl: rawUrl.split('?')[0],
                 origin: 'linkedin_direct'
             });
