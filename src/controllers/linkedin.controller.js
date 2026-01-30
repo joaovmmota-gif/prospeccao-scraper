@@ -1,9 +1,9 @@
 const path = require('path');
 const { runInternalSearch } = require('../services/linkedin/search.service');
+const { parseProfileList } = require('../services/linkedin/parser.service'); // Importação Nova
 
 // 1. Lógica para servir a Interface HTML
 const renderTestInterface = (req, res) => {
-    // Envia o arquivo HTML que criamos na pasta views
     res.sendFile(path.join(__dirname, '../views/interface.html'));
 };
 
@@ -22,28 +22,30 @@ const searchProfiles = async (req, res) => {
     try {
         console.log(`[CONTROLLER] Iniciando busca: ${query.role} @ ${query.company}`);
         
-        // Chama o Serviço (o Robô)
+        // A. Chama o Robô (Navegação e Extração de HTML)
         const htmlContent = await runInternalSearch(cookie, query);
 
         if (!htmlContent) {
             return res.status(404).json({ 
                 success: false, 
-                message: 'Busca finalizada, mas nenhum conteúdo foi retornado.' 
+                message: 'A busca foi realizada, mas a página retornou vazia ou houve um bloqueio severo.' 
             });
         }
 
-        // Retorna o resultado
+        // B. Chama o Parser (Transformação HTML -> JSON)
+        // Se o HTML for uma página de erro do LinkedIn, o parser vai retornar array vazio
+        const extractedData = parseProfileList(htmlContent);
+
+        // Retorna o resultado JSON limpo
         res.json({
             success: true,
             metadata: {
                 role: query.role,
                 company: query.company,
+                count: extractedData.length,
                 timestamp: new Date().toISOString()
             },
-            data: {
-                html_preview: htmlContent.substring(0, 200) + '...',
-                full_length: htmlContent.length
-            }
+            data: extractedData // Aqui vai a lista linda de leads
         });
 
     } catch (error) {
