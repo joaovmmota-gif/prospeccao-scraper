@@ -20,9 +20,9 @@ const searchProfiles = async (req, res) => {
     }
 
     try {
-        console.log(`[CONTROLLER] Iniciando busca (DEBUG MODE): ${query.role} @ ${query.company}`);
+        console.log(`[CONTROLLER] Iniciando busca: ${query.role} @ ${query.company}`);
         
-        // A. Chama o Robô (Navegação e Extração de HTML)
+        // A. Chama o Robô (Navegação)
         const htmlContent = await runInternalSearch(cookie, query);
 
         if (!htmlContent) {
@@ -32,29 +32,24 @@ const searchProfiles = async (req, res) => {
             });
         }
 
-        // B. Tentativa de Parser (Mantemos para ver se funciona, mas o foco agora é coletar o HTML)
+        // B. Chama o Parser (Extração com seletores corrigidos)
         let extractedData = [];
         try {
             extractedData = parseProfileList(htmlContent);
         } catch (e) {
-            console.warn('[CONTROLLER] Erro no parser (ignorado para debug):', e);
+            console.error('[CONTROLLER] Erro fatal no parser:', e);
         }
 
-        // Retorna o resultado com o HTML BRUTO para análise
-        // ATENÇÃO: O campo debug_raw_html conterá todo o código da página
+        // Retorna o resultado limpo (JSON)
         res.json({
             success: true,
-            mode: 'DEBUG_HTML_DUMP', // Flag para indicar que estamos em modo de coleta
             metadata: {
                 role: query.role,
                 company: query.company,
                 count: extractedData.length,
                 timestamp: new Date().toISOString()
             },
-            // Enviamos o HTML completo para você copiar e me enviar
-            debug_raw_html: htmlContent, 
-            // Mantemos os dados extraídos (se houver) para comparação
-            data: extractedData 
+            data: extractedData // Lista de perfis
         });
 
     } catch (error) {

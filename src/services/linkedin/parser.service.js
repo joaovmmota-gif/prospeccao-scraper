@@ -2,54 +2,74 @@ const cheerio = require('cheerio');
 
 /**
  * Recebe o HTML bruto do LinkedIn e extrai a lista de perfis
+ * Baseado na estrutura de classes obfuscadas mas com data-view-name estáveis (2026)
  * @param {string} htmlContent - HTML da página de busca
  * @returns {Array} Lista de objetos com { name, headline, location, url }
  */
 function parseProfileList(htmlContent) {
-    // Carrega o HTML na memória para leitura rápida
     const $ = cheerio.load(htmlContent);
     const profiles = [];
 
-    console.log('[PARSER] Iniciando extração de dados com Cheerio...');
+    console.log('[PARSER] Iniciando extração via seletores data-view-name...');
 
-    // Seletor dos cartões de resultado (pode variar, mas este é o padrão atual da busca de pessoas)
-    // Buscamos a lista (ul) e iteramos sobre os itens (li)
-    $('.reusable-search__entity-result-list > li').each((i, element) => {
+    // 1. Encontra todos os blocos de resultado de pessoa
+    $('div[data-view-name="people-search-result"]').each((i, element) => {
         try {
             const el = $(element);
 
-            // 1. Extração do Nome
-            // O LinkedIn usa spans ocultos para acessibilidade. Pegamos o span visível.
-            const nameAnchor = el.find('.entity-result__title-text a');
-            // Tenta pegar o texto dentro do span aria-hidden="true" (que é o visual limpo)
-            let name = nameAnchor.find('span[aria-hidden="true"]').text().trim();
+            // 2. Extração do Nome e URL (A ncora principal)
+            const nameLink = el.find('a[data-view-name="search-result-lockup-title"]');
             
-            // Fallback: Se não achar o span especifico, pega o texto do link
-            if (!name) name = nameAnchor.text().trim();
+            // O nome pode estar sujo com quebras de linha, então limpamos
+            const name = nameLink.text().replace(/\n/g, '').trim();
+            const rawUrl = nameLink.attr('href');
 
-            const rawUrl = nameAnchor.attr('href');
+            if (!name || !rawUrl) return; // Pula se não tiver o básico
 
-            // 2. Extração do Cargo (Headline)
-            const headline = el.find('.entity-result__primary-subtitle').text().trim();
+            // 3. Navegação Hierárquica para Cargo e Localização
+            // Estrutura observada:
+            // Container de Texto
+            //   -> p (Nome)
+            //   -> div (Wrapper do Headline) -> p (Texto do Headline)
+            //   -> div (Wrapper da Location) -> p (Texto da Location)
+            
+            // Sobe para o paragrafo do nome, depois para o container de texto pai
+            const textContainer = nameLink.closest('div'); 
+            
+            // O Headline costuma ser o texto do primeiro elemento irmão (div) após o nome
+            // Procuramos os 'p' dentro dos 'div' irmãos
+            const siblingDivs = textContainer.find('> div');
+            
+            let headline = 'Não informado';
+            let location = 'Não informado';
 
-            // 3. Extração da Localização
-            const location = el.find('.entity-result__secondary-subtitle').text().trim();
-
-            // 4. Validação e Limpeza
-            // Filtra perfis privados ("Usuário do LinkedIn") ou sem URL
-            if (name && !name.includes('LinkedIn Member') && !name.includes('Usuário do LinkedIn') && rawUrl) {
-                profiles.push({
-                    name: name,
-                    headline: headline || 'Sem título',
-                    location: location || 'Não informado',
-                    // Limpa parâmetros de tracking da URL (?miniProfileUrn=...)
-                    profileUrl: rawUrl.split('?')[0],
-                    origin: 'linkedin_internal_search'
-                });
+            // Tenta pegar do primeiro e segundo irmão
+            if (siblingDivs.length > 0) {
+                headline = $(siblingDivs[0]).find('p').text().trim();
+            }
+            if (siblingDivs.length > 1) {
+                location = $(siblingDivs[1]).find('p').text().trim();
             }
 
+            // Fallback: Se a estrutura hierárquica falhar, tenta pegar todos os 'p' do container
+            // Geralmente: Index 0=Nome, Index 1=Headline, Index 2=Location
+            if (!headline || headline === 'Não informado') {
+                const allParagraphs = textContainer.find('p');
+                if (allParagraphs.length >= 2) headline = $(allParagraphs[1]).text().trim();
+                if (allParagraphs.length >= 3) location = $(allParagraphs[2]).text().trim();
+            }
+
+            profiles.push({
+                name,
+                headline,
+                location,
+                // Remove parametros de query da URL para ficar limpa
+                profileUrl: rawUrl.split('?')[0],
+                origin: 'linkedin_direct'
+            });
+
         } catch (err) {
-            console.warn(`[PARSER] Erro ao ler item ${i}: ${err.message}`);
+            console.warn(`[PARSER] Erro ao processar card ${i}: ${err.message}`);
         }
     });
 
