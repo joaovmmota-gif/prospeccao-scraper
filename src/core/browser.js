@@ -1,8 +1,4 @@
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth');
-
-// Aplica o plugin stealth
-chromium.use(stealth());
+const { chromium } = require('playwright'); // Usando Playwright puro para estabilidade
 
 /**
  * Configurações de Hardening (Anti-Detecção Reforçado)
@@ -13,27 +9,25 @@ const LAUNCH_ARGS = [
     '--disable-infobars',
     '--window-position=0,0',
     '--ignore-certificate-errors',
-    '--disable-blink-features=AutomationControlled', // Oculta a flag de automação
+    '--disable-blink-features=AutomationControlled', // Flag crucial para esconder o robô
     '--disable-dev-shm-usage',
     '--disable-accelerated-2d-canvas',
     '--disable-gpu',
     '--hide-scrollbars',
     '--mute-audio',
-    // Flags adicionais para mascarar WebGL e WebRTC
-    '--disable-gl-drawing-for-tests',
-    '--enable-features=NetworkService,NetworkServiceInProcess',
+    '--start-maximized', // Simula tela cheia
 ];
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// User Agent atualizado para bater com a versão do Playwright 1.58 (Chrome 131)
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 async function startBrowser() {
-    console.log('[BROWSER] Iniciando Chromium em modo Stealth (Hardened)...');
+    console.log('[BROWSER] Iniciando Chromium (Standard + Hardening)...');
     
-    // REMOVIDO: channel: 'chrome' (causava o erro)
     const browser = await chromium.launch({
-        headless: true, 
+        headless: true,
         args: LAUNCH_ARGS,
-        ignoreDefaultArgs: ['--enable-automation'],
+        ignoreDefaultArgs: ['--enable-automation'], // Remove a barra amarela
     });
 
     return browser;
@@ -51,7 +45,7 @@ async function createSession(browser, cookieLiAt) {
         isMobile: false,
         hasTouch: false,
         javaScriptEnabled: true,
-        permissions: ['geolocation'], // Simula permissões padrão
+        permissions: ['geolocation', 'notifications'],
     });
 
     // Injeção do Cookie
@@ -69,39 +63,51 @@ async function createSession(browser, cookieLiAt) {
 
     const page = await context.newPage();
 
-    // --- MÁSCARA MANUAL (EVASÃO V2) ---
-    // Injeta scripts em cada nova aba para sobrescrever propriedades de bot
+    // --- MÁSCARA MANUAL (EVASÃO DE SCRIPT) ---
     await page.addInitScript(() => {
-        // 1. Remove a propriedade navigator.webdriver
+        // 1. Remove navigator.webdriver (Método Robusto)
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
         });
 
-        // 2. Mascara plugins (finge ter PDF Viewer, etc)
+        // 2. Simula Plugins (Chrome PDF Viewer)
         Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5], // Fake length
+            get: () => {
+                const ChromePDFPlugin = {
+                    0: { type: "application/x-google-chrome-pdf", suffixes: "pdf", description: "Portable Document Format" },
+                    description: "Portable Document Format",
+                    filename: "internal-pdf-viewer",
+                    length: 1,
+                    name: "Chrome PDF Plugin"
+                };
+                return [ChromePDFPlugin];
+            },
         });
 
-        // 3. Mascara permissões (evita detecção via Notification API)
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-            Promise.resolve({ state: Notification.permission }) :
-            originalQuery(parameters)
-        );
-        
-        // 4. Fake WebGL Vendor (para não aparecer "Google SwiftShader" ou "Mesa")
+        // 3. Mascara permissões
+        if (window.navigator.permissions) {
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Notification.permission }) :
+                originalQuery(parameters)
+            );
+        }
+
+        // 4. Fake WebGL Vendor
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            // UNMASKED_VENDOR_WEBGL
-            if (parameter === 37445) {
-                return 'Intel Inc.';
-            }
-            // UNMASKED_RENDERER_WEBGL
-            if (parameter === 37446) {
-                return 'Intel Iris OpenGL Engine';
-            }
+            if (parameter === 37445) return 'Intel Inc.';
+            if (parameter === 37446) return 'Intel Iris OpenGL Engine';
             return getParameter(parameter);
+        };
+
+        // 5. Chrome Runtime (Necessário para evitar detecção básica)
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
         };
     });
 
