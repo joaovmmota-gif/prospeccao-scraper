@@ -4,21 +4,15 @@ const net = require('net');
 class SMTPService {
 
     /**
-     * Verifica se o domínio possui registros MX válidos (existe e pode receber e-mails)
-     * Deve ser chamado antes de qualquer tentativa de conexão SMTP.
-     * @param {string} domain - Domínio a ser verificado
-     * @returns {Promise<boolean>} true se existir, false se não
+     * Verifica se o domínio possui registros MX válidos.
      */
     checkDomainExists = async (domain) => {
         try {
             console.log(`[SMTP] Verificando registros MX para: ${domain}`);
             const mxRecords = await dns.resolveMx(domain);
-            
-            // Verifica se retornou um array e se tem pelo menos um registro
             if (Array.isArray(mxRecords) && mxRecords.length > 0) {
                 return true;
             }
-            
             console.warn(`[SMTP] Domínio ${domain} não tem registros MX válidos.`);
             return false;
         } catch (error) {
@@ -29,99 +23,128 @@ class SMTPService {
 
     /**
      * Verifica se um e-mail existe conectando-se ao servidor SMTP
-     * @param {string} email - E-mail para testar
-     * @returns {Promise<boolean>} true se existir, false se não
+     * Versão Blindada contra "Write after end"
      */
-    verifyEmailSMTP = async (email) => {
+    verifyEmailSMTP = async (email, mxServer) => {
         const domain = email.split('@')[1];
         
         try {
-            // 1. Descobre o servidor de e-mail da empresa (MX Record)
-            const mxRecords = await dns.resolveMx(domain);
-            if (!mxRecords || mxRecords.length === 0) {
-                console.warn(`[SMTP] Domínio ${domain} não tem servidor de e-mail.`);
-                return false;
+            // 1. Resolução de MX (se não fornecido)
+            if (!mxServer) {
+                const mxRecords = await dns.resolveMx(domain);
+                if (!mxRecords || mxRecords.length === 0) return false;
+                mxServer = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
             }
-            
-            // Pega o servidor com maior prioridade (menor número)
-            const mxServer = mxRecords.sort((a, b) => a.priority - b.priority)[0].exchange;
 
-            // 2. Inicia o Handshake SMTP
+            // 2. Handshake SMTP
             return await new Promise((resolve) => {
+                let resolved = false; // Flag para evitar dupla resolução
                 const socket = net.createConnection(25, mxServer);
                 let step = 0;
-                let isValid = false;
 
-                // Configura timeout de 5s para não travar o loop de 13s
+                // Função auxiliar para resolver a Promise apenas uma vez
+                const finish = (result) => {
+                    if (!resolved) {
+                        resolved = true;
+                        if (!socket.destroyed) socket.destroy();
+                        resolve(result);
+                    }
+                };
+
+                // Função auxiliar para escrever com segurança
+                const safeWrite = (command) => {
+                    if (resolved) return; // Se já acabou, não escreve mais
+                    
+                    if (socket.writable && !socket.destroyed) {
+                        socket.write(command);
+                    } else {
+                        console.warn(`[SMTP] Tentativa de escrita em socket fechado para ${email}`);
+                        finish(false);
+                    }
+                };
+
+                // Timeout de 5s
                 socket.setTimeout(5000, () => {
-                    socket.destroy();
-                    resolve(false);
+                    finish(false);
                 });
 
                 socket.on('data', (data) => {
-                    const response = data.toString();
+                    if (resolved) return;
 
-                    // Passo 0: Servidor diz "220" -> Mandamos "HELO"
-                    if (response.startsWith('220') && step === 0) {
-                        socket.write(`HELO ${domain}\r\n`);
-                        step++;
-                    }
-                    // Passo 1: Aceita HELO -> Mandamos "MAIL FROM"
-                    else if (response.startsWith('250') && step === 1) {
-                        socket.write(`MAIL FROM:<verify@${domain}>\r\n`);
-                        step++;
-                    }
-                    // Passo 2: Aceita MAIL FROM -> Mandamos "RCPT TO"
-                    else if (response.startsWith('250') && step === 2) {
-                        socket.write(`RCPT TO:<${email}>\r\n`);
-                        step++;
-                    }
-                    // Passo 3: O Veredito
-                    else if (step === 3) {
-                        if (response.startsWith('250')) {
-                            isValid = true; 
+                    const response = data.toString();
+                    
+                    try {
+                        // Passo 0: Servidor diz "220" -> Mandamos "HELO"
+                        if (response.startsWith('220') && step === 0) {
+                            safeWrite(`HELO ${domain}\r\n`);
+                            step++;
                         }
-                        socket.write('QUIT\r\n');
-                        socket.end();
-                        resolve(isValid);
+                        // Passo 1: Aceita HELO -> Mandamos "MAIL FROM"
+                        else if (response.startsWith('250') && step === 1) {
+                            safeWrite(`MAIL FROM:<verify@${domain}>\r\n`);
+                            step++;
+                        }
+                        // Passo 2: Aceita MAIL FROM -> Mandamos "RCPT TO"
+                        else if (response.startsWith('250') && step === 2) {
+                            safeWrite(`RCPT TO:<${email}>\r\n`);
+                            step++;
+                        }
+                        // Passo 3: O Veredito
+                        else if (step === 3) {
+                            if (response.startsWith('250')) {
+                                // E-mail válido!
+                                safeWrite('QUIT\r\n');
+                                finish(true);
+                            } else {
+                                // Qualquer coisa que não seja 250 aqui (ex: 550) é falha
+                                safeWrite('QUIT\r\n');
+                                finish(false);
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[SMTP] Erro lógico durante handshake: ${err.message}`);
+                        finish(false);
                     }
                 });
 
                 socket.on('error', (err) => {
-                    console.warn(`[SMTP] Erro de conexão em ${email}: ${err.message}`);
-                    socket.destroy();
-                    resolve(false);
+                    // Não logamos stack trace completo para não poluir, apenas aviso
+                    // console.warn(`[SMTP] Erro de conexão/socket em ${email}: ${err.message}`);
+                    finish(false);
+                });
+
+                socket.on('end', () => {
+                    finish(false);
                 });
             });
 
         } catch (error) {
-            console.error(`[SMTP ERROR] Falha ao verificar ${email}:`, error.message);
+            console.error(`[SMTP ERROR] Falha crítica ao verificar ${email}:`, error.message);
             return false;
         }
     }
 
     /**
-     * Verifica se o domínio aceita qualquer e-mail (Catch-All)
-     * @param {string} domain 
-     * @returns {Promise<boolean>} true se for catch-all
+     * Verifica Catch-All (Reutilizando a lógica blindada)
      */
-    checkCatchAll = async (domain) => {
-        // Gera um e-mail aleatório que garantidamente não deveria existir
+    checkCatchAll = async (domain, mxServer) => {
+        if (!mxServer) return false;
+
         const randomString = Math.random().toString(36).substring(2, 10);
         const testEmail = `anticanary_${randomString}@${domain}`;
         
-        console.log(`[SMTP-Anticatch] Testando integridade do domínio: ${domain}...`);
+        console.log(`[SMTP-Anticatch] Testando: ${testEmail} via ${mxServer}`);
         
-        // Se o servidor SMTP disser que este e-mail aleatório "existe", o domínio é Catch-All
-        const isCatchAll = await this.verifyEmailSMTP(testEmail);
+        // Se der erro de conexão, assumimos que NÃO é catch-all (safe default)
+        // para não bloquear domínios válidos por erro de rede.
+        const isCatchAll = await this.verifyEmailSMTP(testEmail, mxServer);
         
         if (isCatchAll) {
-            console.warn(`[SMTP-Anticatch] ALERTA: Domínio ${domain} é Catch-All. Validação desativada para este alvo.`);
+            console.warn(`[SMTP-Anticatch] ALERTA: ${domain} é Catch-All.`);
         }
         
         return isCatchAll;
     }
 }
 
-// Exporta uma instância para manter o estado se necessário e facilitar o uso
 module.exports = new SMTPService();
