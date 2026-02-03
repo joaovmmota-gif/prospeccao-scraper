@@ -1,32 +1,36 @@
-const express = require('express');
-const router = express.Router();
+const { Router } = require('express');
+const router = Router();
 
-const LinkedinController = require('../controllers/linkedin.controller');
-const EmailController = require('../controllers/email.controller'); // Importa Controller de E-mail
-const { startBrowser, createSession } = require('../core/browser');
+// Importação dos Controllers
+// Nota: Os controllers exportam instâncias (new Controller())
+const emailController = require('../controllers/email.controller');
+const linkedinController = require('../controllers/linkedin.controller');
 
-// --- LinkedIn ---
-router.get('/tools/test-ui', LinkedinController.renderTestInterface);
-router.post('/api/v1/linkedin/search', LinkedinController.searchProfiles);
+/**
+ * ROTAS DE LINKEDIN
+ * Endpoint para busca e scraping de perfis
+ */
+// Verifica se o método existe antes de atribuir para evitar crash na inicialização
+if (linkedinController && (linkedinController.search || linkedinController.scrape)) {
+    // Tenta usar search, se não existir usa scrape (fallback de compatibilidade)
+    const linkedinMethod = linkedinController.search || linkedinController.scrape;
+    router.post('/linkedin/search', linkedinMethod);
+} else {
+    console.warn('[Routes] Aviso: Método do LinkedinController não encontrado.');
+}
 
-// --- E-mail Finder (NOVO) ---
-router.post('/api/v1/email/find', EmailController.findEmail); // Nova Rota
+/**
+ * ROTAS DE EMAIL (ENRICHMENT)
+ * Endpoint para validação SMTP com Throttling
+ */
+router.post('/enrich/email', emailController.enrich);
 
-// --- Debug (Stealth Check) ---
-router.get('/debug/stealth', async (req, res) => {
-    let browser = null;
-    try {
-        browser = await startBrowser();
-        const page = await createSession(browser, null);
-        await page.goto('https://bot.sannysoft.com/', { waitUntil: 'networkidle' });
-        const screenshotBuffer = await page.screenshot({ fullPage: true });
-        res.set('Content-Type', 'image/png');
-        res.send(screenshotBuffer);
-    } catch (e) {
-        res.status(500).send(e.message);
-    } finally {
-        if(browser) await browser.close();
-    }
+/**
+ * ROTA DE HEALTHCHECK
+ * Para monitoramento do Docker/Easypanel
+ */
+router.get('/health', (req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime() });
 });
 
 module.exports = router;

@@ -5,8 +5,10 @@ class EmailController {
     /**
      * Processo de Enriquecimento de Email com Throttling (Hostinger Friendly)
      * Rota: POST /api/enrich/email
+     * * NOTA: Usando Arrow Function para garantir o bind do 'this' e
+     * permitir destructuring nas rotas sem gerar erro de 'Undefined'.
      */
-    async enrich(req, res) {
+    enrich = async (req, res) => {
         try {
             const { firstName, lastName, domain } = req.body;
 
@@ -19,7 +21,7 @@ class EmailController {
 
             console.log(`[EmailController] Iniciando descoberta para: ${firstName} ${lastName} em ${domain}`);
 
-            // 2. Geração de Permutações (Limitado a 5)
+            // 2. Geração de Permutações (Limitado a 5 pelo PermutatorService)
             const permutations = permutatorService.generate(firstName, lastName, domain);
             
             if (permutations.length === 0) {
@@ -57,14 +59,12 @@ class EmailController {
 
                 } catch (innerError) {
                     console.error(`[SMTP] Erro ao testar ${email}:`, innerError.message);
-                    // Em caso de erro de conexão (timeout/refused), continuamos para o próximo
-                    // mas mantemos o delay para segurança
+                    // Em caso de erro de conexão, mantém o delay por segurança
                     if (i < permutations.length - 1) await this.delay(13000);
                 }
             }
 
             // 4. Fallback - Nenhum encontrado nas 5 tentativas principais
-            // Retorna status específico para agendamento noturno (Night Batch)
             console.log(`[EmailController] Nenhum email válido encontrado nas permutações principais.`);
             return res.json({
                 status: 'not_found',
@@ -77,14 +77,18 @@ class EmailController {
 
         } catch (error) {
             console.error('[EmailController] Erro crítico:', error);
-            return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+            // Evita erro de "headers already sent"
+            if (!res.headersSent) {
+                return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+            }
         }
     }
 
     /**
      * Helper para pausar a execução (Promisified Timeout)
+     * Arrow function para manter contexto
      */
-    delay(ms) {
+    delay = (ms) => {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
