@@ -2,12 +2,20 @@ const path = require('path');
 const { runInternalSearch } = require('../services/linkedin/search.service');
 const { parseProfileList } = require('../services/linkedin/parser.service');
 
-// 1. Lógica para servir a Interface HTML
+/**
+ * 1. Lógica para servir a Interface HTML
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
 const renderTestInterface = (req, res) => {
     res.sendFile(path.join(__dirname, '../views/interface.html'));
 };
 
-// 2. Lógica para processar a API de Busca
+/**
+ * 2. Lógica para processar a API de Busca
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
 const searchProfiles = async (req, res) => {
     const { cookie, query } = req.body;
 
@@ -68,5 +76,5 @@ const searchProfiles = async (req, res) => {
 
 module.exports = {
     renderTestInterface,
-    searchProfiles
+    searchProfiles // <--- O nome real da exportação é este
 };

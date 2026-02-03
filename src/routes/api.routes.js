@@ -1,32 +1,32 @@
-const { Router } = require('express');
-const router = Router();
+const express = require('express');
+const router = express.Router();
 
-// Importação dos Controllers
-// Nota: Os controllers exportam instâncias (new Controller())
-const emailController = require('../controllers/email.controller');
+// Importações
 const linkedinController = require('../controllers/linkedin.controller');
+const emailController = require('../controllers/email.controller');
 
 /**
- * ROTAS DE LINKEDIN
- * Endpoint para busca e scraping de perfis
+ * DEBUG & VALIDAÇÃO (Fail-Fast)
+ * Garante que a função searchProfiles existe antes de tentar criar a rota.
  */
-
-    // Tenta usar search, se não existir usa scrape (fallback de compatibilidade)
-    const linkedinMethod = linkedinController.search || linkedinController.scrape;
-    router.post('/linkedin/search', linkedinMethod);
-
-
+if (!linkedinController.searchProfiles) {
+    console.error('❌ ERRO FATAL: linkedinController.searchProfiles não foi encontrado!');
+    console.log('Exportações disponíveis:', Object.keys(linkedinController));
+    process.exit(1); // Encerra o container para não ficar em loop de erro
+}
 
 /**
- * ROTAS DE EMAIL (ENRICHMENT)
- * Endpoint para validação SMTP com Throttling
+ * DEFINIÇÃO DE ROTAS
  */
+
+// 1. Busca LinkedIn
+// CORREÇÃO: Usando .searchProfiles (nome definido no controller)
+router.post('/linkedin/search', linkedinController.searchProfiles);
+
+// 2. Enriquecimento de Email
 router.post('/enrich/email', emailController.enrich);
 
-/**
- * ROTA DE HEALTHCHECK
- * Para monitoramento do Docker/Easypanel
- */
+// 3. Health Check
 router.get('/health', (req, res) => {
     res.json({ status: 'ok', uptime: process.uptime() });
 });
