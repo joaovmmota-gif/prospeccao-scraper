@@ -4,11 +4,12 @@ const clearbitService = require('../services/domain/clearbit.service');
 
 class EmailController {
     /**
-     * Processo de Enriquecimento de Email com Throttling, Proteção Catch-All e Otimização MX
+     * Processo de Enriquecimento de Email com Throttling e Proteção Catch-All
      * Rota: POST /api/enrich/email
-     * * Changelog V2.4.0 (MX Optimization):
-     * - Fix: Loop de MX resolvido (verifica MX uma única vez antes do loop).
-     * - Perf: Reutilização do servidor MX resolvido para checkCatchAll e verifyEmailSMTP.
+     * * Changelog V2.3.0:
+     * - Feature: Adicionada verificação checkCatchAll antes do loop de permutações.
+     * - Fix: Implementado monitoramento de 'req.closed' para evitar Write After End.
+     * - Fix: Garantia de resposta única com flag 'responseSent'.
      */
     enrich = async (req, res) => {
         let responseSent = false;
@@ -40,24 +41,19 @@ class EmailController {
                 });
             }
 
-            // --- NOVO: VERIFICAÇÃO DE MX (FAIL FAST) ---
-            // Verifica se o domínio tem servidor de e-mail ANTES de tentar qualquer coisa.
-            // Retorna o endereço do servidor (ex: "alt1.gmail-smtp-in.l.google.com") ou false.
-            const mxServer = await smtpService.hasMXRecords(targetDomain);
-            
-            if (!mxServer) {
+            // --- NOVO: Verificação de existência do domínio via MX antes de qualquer permutação ---
+            const domainExists = await smtpService.checkDomainExists(targetDomain);
+            if (!domainExists) {
                 responseSent = true;
-                return res.json({
-                    status: 'invalid_domain',
-                    message: 'Domain has no valid MX records (No Email Server active).',
-                    data: { domain: targetDomain }
+                return res.status(400).json({
+                    error: 'Domain does not exist or has no valid MX records',
+                    details: `Domain checked: ${targetDomain}`
                 });
             }
-            // --------------------------------------------
 
-            // --- PROTEÇÃO ANTI CATCH-ALL ---
-            // Passamos o mxServer já resolvido para economizar tempo
-            const isCatchAll = await smtpService.checkCatchAll(targetDomain, mxServer);
+            // --- NOVO: PROTEÇÃO ANTI CATCH-ALL ---
+            // Verifica se o servidor aceita qualquer e-mail antes de gastar tempo no loop
+            const isCatchAll = await smtpService.checkCatchAll(targetDomain);
             
             if (isCatchAll) {
                 responseSent = true;
@@ -71,7 +67,7 @@ class EmailController {
                     }
                 });
             }
-            // -------------------------------
+            // --------------------------------------
 
             const permutations = permutatorService.generate(firstName, lastName, targetDomain);
             
@@ -83,8 +79,7 @@ class EmailController {
                 console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
 
                 try {
-                    // Passamos o mxServer para evitar resolver DNS novamente a cada iteração
-                    const isValid = await smtpService.verifyEmailSMTP(email, mxServer);
+                    const isValid = await smtpService.verifyEmailSMTP(email);
 
                     if (isValid && !responseSent && !req.closed) {
                         console.log(`[SMTP] SUCESSO! Encontrado: ${email}`);
