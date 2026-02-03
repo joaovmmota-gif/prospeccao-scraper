@@ -1,28 +1,45 @@
 const permutatorService = require('../services/email/permutator.service');
 const smtpService = require('../services/email/smtp.service');
+const clearbitService = require('../services/domain/clearbit.service');
 
 class EmailController {
     /**
      * Processo de Enriquecimento de Email com Throttling (Hostinger Friendly)
      * Rota: POST /api/enrich/email
-     * * NOTA: Usando Arrow Function para garantir o bind do 'this' e
-     * permitir destructuring nas rotas sem gerar erro de 'Undefined'.
+     * * Changelog V2.2:
+     * - Adicionado suporte a 'companyName' (Busca automática de domínio via Clearbit).
+     * - Mantido Throttling de 13s.
      */
     enrich = async (req, res) => {
         try {
-            const { firstName, lastName, domain } = req.body;
+            // Aceita domain OU companyName
+            const { firstName, lastName, domain, companyName } = req.body;
 
-            // 1. Validação Básica
-            if (!firstName || !lastName || !domain) {
+            // 1. Resolução de Domínio (Lógica Inteligente)
+            let targetDomain = domain;
+
+            // Se não veio domínio, mas veio o nome da empresa, tentamos descobrir
+            if (!targetDomain && companyName) {
+                console.log(`[EmailController] Domínio ausente. Buscando Clearbit para: "${companyName}"...`);
+                targetDomain = await clearbitService.findDomain(companyName);
+                
+                if (targetDomain) {
+                    console.log(`[EmailController] Domínio descoberto: ${targetDomain}`);
+                }
+            }
+
+            // Validação Final: Se depois de tentar descobrir, ainda não temos domínio, paramos.
+            if (!firstName || !lastName || !targetDomain) {
                 return res.status(400).json({ 
-                    error: 'Missing parameters. Required: firstName, lastName, domain' 
+                    error: 'Missing parameters. Required: firstName, lastName AND (domain OR companyName)',
+                    details: !targetDomain && companyName ? `Could not resolve domain for company: ${companyName}` : undefined
                 });
             }
 
-            console.log(`[EmailController] Iniciando descoberta para: ${firstName} ${lastName} em ${domain}`);
+            console.log(`[EmailController] Iniciando descoberta para: ${firstName} ${lastName} em ${targetDomain}`);
 
             // 2. Geração de Permutações (Limitado a 5 pelo PermutatorService)
-            const permutations = permutatorService.generate(firstName, lastName, domain);
+            const permutations = permutatorService.generate(firstName, lastName, targetDomain);
             
             if (permutations.length === 0) {
                 return res.status(400).json({ error: 'Invalid input data for permutation' });
@@ -34,7 +51,7 @@ class EmailController {
                 console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
 
                 try {
-                    // CORREÇÃO: Chamando o nome correto da função conforme smtp.service.js
+                    // Chama a função correta do serviço SMTP
                     const isValid = await smtpService.verifyEmailSMTP(email);
 
                     if (isValid) {
@@ -44,6 +61,7 @@ class EmailController {
                             data: {
                                 email: email,
                                 method: 'smtp_validation',
+                                domain_source: domain ? 'provided' : 'clearbit_discovery',
                                 confidence: 'high',
                                 attempts: i + 1
                             }
@@ -70,6 +88,7 @@ class EmailController {
                 status: 'not_found',
                 action: 'schedule_night_batch',
                 metadata: {
+                    target_domain: targetDomain,
                     tested_permutations: permutations,
                     reason: 'smtp_rejected_all'
                 }
@@ -77,7 +96,6 @@ class EmailController {
 
         } catch (error) {
             console.error('[EmailController] Erro crítico:', error);
-            // Evita erro de "headers already sent"
             if (!res.headersSent) {
                 return res.status(500).json({ error: 'Internal Server Error', details: error.message });
             }
@@ -86,7 +104,6 @@ class EmailController {
 
     /**
      * Helper para pausar a execução (Promisified Timeout)
-     * Arrow function para manter contexto
      */
     delay = (ms) => {
         return new Promise(resolve => setTimeout(resolve, ms));
