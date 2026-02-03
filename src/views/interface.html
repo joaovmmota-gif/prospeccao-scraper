@@ -80,7 +80,7 @@
             };
 
             try {
-                const response = await fetch('/v1/linkedin/search', {
+                const response = await fetch('/linkedin/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
