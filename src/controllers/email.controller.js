@@ -3,14 +3,7 @@ const smtpService = require('../services/email/smtp.service');
 const clearbitService = require('../services/domain/clearbit.service');
 
 class EmailController {
-    /**
-     * Processo de Enriquecimento de Email
-     * Versão 2.5.0: Fix de Falso Positivo de Desconexão (n8n Timeout)
-     */
     enrich = async (req, res) => {
-        // Removemos a flag responseSent global e o listener req.on('close') agressivo
-        // Vamos confiar no res.headersSent nativo do Express
-
         try {
             console.log('--- [DEBUG] Início da Requisição ---');
             console.log('Payload:', JSON.stringify(req.body));
@@ -18,42 +11,35 @@ class EmailController {
             const { firstName, lastName, domain, companyName } = req.body;
             let targetDomain = domain;
 
-            // 1. Resolução de Domínio
+            // 1. Clearbit
             if (!targetDomain && companyName) {
-                console.log(`[EmailController] Buscando domínio para empresa: "${companyName}"...`);
+                console.log(`[EmailController] Buscando domínio para: "${companyName}"...`);
                 try {
                     targetDomain = await clearbitService.findDomain(companyName);
-                    if (targetDomain) console.log(`[EmailController] ✅ Clearbit encontrou: ${targetDomain}`);
-                } catch (cbError) {
-                    console.error(`[EmailController] ❌ Erro na API Clearbit: ${cbError.message}`);
-                }
+                    if (targetDomain) console.log(`[EmailController] ✅ Clearbit: ${targetDomain}`);
+                } catch (e) { console.error(e); }
             }
 
-            // Validação de Parâmetros
             if (!firstName || !lastName || !targetDomain) {
-                return res.status(400).json({ 
-                    error: 'Missing parameters',
-                    details: !targetDomain && companyName 
-                        ? `Domínio não encontrado para "${companyName}".`
-                        : 'firstName, lastName e domain são obrigatórios.'
-                });
+                return res.status(400).json({ error: 'Missing parameters' });
             }
 
-            // 2. Fail Fast: Verificação de MX
+            // 2. Fail Fast & MX Discovery
+            // AGORA mxServer CONTÉM A STRING DO SERVIDOR (ex: alt1.google.com)
             console.log(`[EmailController] Verificando MX para: ${targetDomain}`);
-            const mxServer = await smtpService.checkDomainExists(targetDomain); // Usa o método correto que devolve boolean
+            const mxServer = await smtpService.checkDomainExists(targetDomain);
 
             if (!mxServer) {
                 return res.json({
                     status: 'invalid_domain',
-                    message: `O domínio ${targetDomain} não possui MX válido.`,
+                    message: `Domínio ${targetDomain} sem MX válido.`,
                     data: { domain: targetDomain }
                 });
             }
 
             // 3. Proteção Anti-Catch-All
-            // Passamos mxServer = undefined para ele resolver internamente, ou você pode ajustar o checkDomainExists para retornar o servidor
-            const isCatchAll = await smtpService.checkCatchAll(targetDomain);
+            // Passamos o mxServer resolvido para garantir que a função execute
+            const isCatchAll = await smtpService.checkCatchAll(targetDomain, mxServer);
             
             if (isCatchAll) {
                 return res.json({
@@ -65,51 +51,37 @@ class EmailController {
 
             // 4. Loop de Validação
             const permutations = permutatorService.generate(firstName, lastName, targetDomain);
-            console.log(`[EmailController] Iniciando validação de ${permutations.length} permutações...`);
+            console.log(`[EmailController] Validando ${permutations.length} permutações...`);
             
             for (let i = 0; i < permutations.length; i++) {
-                // VERIFICAÇÃO ATIVA DE CONEXÃO
-                // Se o socket foi destruído ou a resposta já foi encerrada, paramos.
-                if (req.socket.destroyed || res.writableEnded) {
-                    console.warn('[EmailController] 🛑 Conexão encerrada pelo cliente. Parando loop.');
-                    break;
-                }
+                if (req.socket.destroyed || res.writableEnded) break;
 
                 const email = permutations[i];
                 console.log(`[SMTP Loop] (${i + 1}/${permutations.length}) Testando: ${email}`);
 
                 try {
-                    const isValid = await smtpService.verifyEmailSMTP(email);
+                    // Passamos mxServer para otimizar
+                    const isValid = await smtpService.verifyEmailSMTP(email, mxServer);
 
-                    // Verifica novamente antes de tentar responder
-                    if (isValid && !res.writableEnded && !req.socket.destroyed) {
-                        console.log(`[SMTP Loop] ✅ SUCESSO! E-mail válido: ${email}`);
+                    if (isValid && !res.writableEnded) {
+                        console.log(`[SMTP Loop] ✅ SUCESSO: ${email}`);
                         return res.json({
                             status: 'found',
-                            data: {
-                                email: email,
-                                method: 'smtp_validation',
-                                confidence: 'high',
-                                attempts: i + 1
-                            }
+                            data: { email, method: 'smtp', attempts: i + 1 }
                         });
                     }
 
-                    // Throttling (Delay)
                     if (i < permutations.length - 1 && !res.writableEnded) {
-                        console.log(`[Throttling] ⏳ Aguardando 13s...`);
+                        console.log(`[Throttling] ⏳ 13s...`);
                         await this.delay(13000);
                     }
-
-                } catch (innerError) {
-                    console.error(`[SMTP Loop] Erro ao testar ${email}:`, innerError.message);
-                    if (i < permutations.length - 1 && !res.writableEnded) await this.delay(13000);
+                } catch (e) {
+                    console.error(`Erro no loop: ${e.message}`);
+                    if (i < permutations.length - 1) await this.delay(13000);
                 }
             }
 
-            // 5. Fallback
-            if (!res.headersSent && !res.writableEnded) {
-                console.log(`[EmailController] 🏁 Fim do loop. Nada encontrado.`);
+            if (!res.headersSent) {
                 return res.json({
                     status: 'not_found',
                     action: 'schedule_night_batch',
@@ -118,10 +90,8 @@ class EmailController {
             }
 
         } catch (error) {
-            console.error('[EmailController] 💥 Erro Crítico:', error);
-            if (!res.headersSent) {
-                return res.status(500).json({ error: 'Internal Server Error', details: error.message });
-            }
+            console.error('[EmailController] Erro:', error);
+            if (!res.headersSent) res.status(500).json({ error: error.message });
         }
     }
 
