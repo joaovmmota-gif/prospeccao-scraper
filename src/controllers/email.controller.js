@@ -12,15 +12,8 @@ class EmailController {
      * - Fix: Garantia de resposta única com flag 'responseSent'.
      */
     enrich = async (req, res) => {
+        // Removido tratamento de desconexão do cliente (req.on('close'))
         let responseSent = false;
-
-        // Handler para abortar processamento se o cliente (n8n) desistir/timeout
-        req.on('close', () => {
-            if (!responseSent) {
-                console.warn('[EmailController] Cliente desconectou. Abortando verificação.');
-                responseSent = true; 
-            }
-        });
 
         try {
             const { firstName, lastName, domain, companyName } = req.body;

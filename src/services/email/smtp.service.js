@@ -1,21 +1,32 @@
+const dns = require('dns').promises;
+const net = require('net');
+
+class SMTPService {
+
     /**
      * Verifica se o domínio possui registros MX válidos (existe e pode receber e-mails)
+     * Deve ser chamado antes de qualquer tentativa de conexão SMTP.
      * @param {string} domain - Domínio a ser verificado
      * @returns {Promise<boolean>} true se existir, false se não
      */
     checkDomainExists = async (domain) => {
         try {
+            console.log(`[SMTP] Verificando registros MX para: ${domain}`);
             const mxRecords = await dns.resolveMx(domain);
-            return Array.isArray(mxRecords) && mxRecords.length > 0;
+            
+            // Verifica se retornou um array e se tem pelo menos um registro
+            if (Array.isArray(mxRecords) && mxRecords.length > 0) {
+                return true;
+            }
+            
+            console.warn(`[SMTP] Domínio ${domain} não tem registros MX válidos.`);
+            return false;
         } catch (error) {
-            console.warn(`[SMTP] Domínio ${domain} não possui MX válido ou não existe:`, error.message);
+            console.warn(`[SMTP] Falha ao resolver MX do domínio ${domain}:`, error.message);
             return false;
         }
     }
-const dns = require('dns').promises;
-const net = require('net');
 
-class SMTPService {
     /**
      * Verifica se um e-mail existe conectando-se ao servidor SMTP
      * @param {string} email - E-mail para testar
