@@ -4,90 +4,106 @@ const clearbitService = require('../services/domain/clearbit.service');
 
 class EmailController {
     /**
-     * Processo de Enriquecimento de Email com Throttling, Proteção Catch-All e Otimização MX
+     * Processo de Enriquecimento de Email
+     * Fluxo: Clearbit -> MX Check -> Catch-All Check -> SMTP Validation Loop
      * Rota: POST /api/enrich/email
-     * * Changelog V2.4.0 (MX Optimization):
-     * - Fix: Loop de MX resolvido (verifica MX uma única vez antes do loop).
-     * - Perf: Reutilização do servidor MX resolvido para checkCatchAll e verifyEmailSMTP.
      */
     enrich = async (req, res) => {
         let responseSent = false;
 
-        // Handler para abortar processamento se o cliente (n8n) desistir/timeout
+        // 1. Monitoramento de Conexão (Abort Controller)
+        // Se o n8n ou cliente desconectar, paramos o script para não gastar recursos/cota
         req.on('close', () => {
             if (!responseSent) {
-                console.warn('[EmailController] Cliente desconectou. Abortando verificação.');
+                console.warn('[EmailController] ⚠️ Cliente desconectou. Abortando processo.');
                 responseSent = true; 
             }
         });
 
         try {
+            console.log('--- [DEBUG] Início da Requisição ---');
+            console.log('Payload:', JSON.stringify(req.body));
+
             const { firstName, lastName, domain, companyName } = req.body;
             let targetDomain = domain;
 
-            // 1. Resolução de Domínio via Clearbit (se necessário)
+            // 2. Resolução de Domínio (Clearbit)
+            // Só executa se não temos o domínio, mas temos o nome da empresa
             if (!targetDomain && companyName) {
-                console.log(`[EmailController] Buscando domínio Clearbit para: "${companyName}"...`);
-                targetDomain = await clearbitService.findDomain(companyName);
+                console.log(`[EmailController] Buscando domínio para empresa: "${companyName}"...`);
+                try {
+                    targetDomain = await clearbitService.findDomain(companyName);
+                    
+                    if (targetDomain) {
+                        console.log(`[EmailController] ✅ Clearbit encontrou: ${targetDomain}`);
+                    } else {
+                        console.warn(`[EmailController] ⚠️ Clearbit não encontrou domínio para: "${companyName}"`);
+                    }
+                } catch (cbError) {
+                    console.error(`[EmailController] ❌ Erro na API Clearbit: ${cbError.message}`);
+                }
             }
 
-            // Validação de entrada obrigatória
+            // 3. Validação de Parâmetros Obrigatórios
             if (!firstName || !lastName || !targetDomain) {
                 responseSent = true;
+                const errorMsg = !targetDomain && companyName 
+                    ? `Não foi possível encontrar o domínio para a empresa: "${companyName}". Tente informar o 'domain' manualmente.`
+                    : 'Parâmetros obrigatórios faltando: firstName, lastName e domain (ou companyName).';
+                
                 return res.status(400).json({ 
                     error: 'Missing parameters',
-                    details: !targetDomain && companyName ? `Domain not found for: ${companyName}` : undefined
+                    details: errorMsg
                 });
             }
 
-            // --- NOVO: VERIFICAÇÃO DE MX (FAIL FAST) ---
-            // Verifica se o domínio tem servidor de e-mail ANTES de tentar qualquer coisa.
-            // Retorna o endereço do servidor (ex: "alt1.gmail-smtp-in.l.google.com") ou false.
-            const mxServer = await smtpService.hasMXRecords(targetDomain);
-            
-            if (!mxServer) {
+            // 4. Fail Fast: Verificação de Registros MX (DNS)
+            // Evita tentar validar e-mails em domínios que não existem ou não têm servidor de e-mail
+            console.log(`[EmailController] Verificando existência de MX para: ${targetDomain}`);
+            const mxExists = await smtpService.checkDomainExists(targetDomain);
+
+            if (!mxExists) {
                 responseSent = true;
                 return res.json({
                     status: 'invalid_domain',
-                    message: 'Domain has no valid MX records (No Email Server active).',
+                    message: `O domínio ${targetDomain} não possui servidores de e-mail válidos (MX Records).`,
                     data: { domain: targetDomain }
                 });
             }
-            // --------------------------------------------
 
-            // --- PROTEÇÃO ANTI CATCH-ALL ---
-            // Passamos o mxServer já resolvido para economizar tempo
-            const isCatchAll = await smtpService.checkCatchAll(targetDomain, mxServer);
+            // 5. Proteção Anti-Catch-All
+            // Verifica se o servidor aceita tudo antes de iniciarmos o loop
+            const isCatchAll = await smtpService.checkCatchAll(targetDomain);
             
             if (isCatchAll) {
                 responseSent = true;
                 return res.json({
                     status: 'risky',
-                    message: 'Domain is Catch-All. Validation is unreliable.',
+                    message: 'Domínio é Catch-All (aceita qualquer e-mail). Validação SMTP não é confiável.',
                     data: { 
                         domain: targetDomain, 
                         catchAll: true,
-                        recommendation: 'Manual check required' 
+                        recommendation: 'Verificação manual necessária' 
                     }
                 });
             }
-            // -------------------------------
 
+            // 6. Geração de Permutações e Loop de Validação
             const permutations = permutatorService.generate(firstName, lastName, targetDomain);
+            console.log(`[EmailController] Iniciando validação de ${permutations.length} permutações...`);
             
-            // 2. Loop de Verificação com Throttling (Máx 5 req/min Hostinger)
             for (let i = 0; i < permutations.length; i++) {
+                // Checa desconexão antes de cada passo
                 if (responseSent || req.closed) break;
 
                 const email = permutations[i];
-                console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
+                console.log(`[SMTP Loop] (${i + 1}/${permutations.length}) Testando: ${email}`);
 
                 try {
-                    // Passamos o mxServer para evitar resolver DNS novamente a cada iteração
-                    const isValid = await smtpService.verifyEmailSMTP(email, mxServer);
+                    const isValid = await smtpService.verifyEmailSMTP(email);
 
                     if (isValid && !responseSent && !req.closed) {
-                        console.log(`[SMTP] SUCESSO! Encontrado: ${email}`);
+                        console.log(`[SMTP Loop] ✅ SUCESSO! E-mail válido: ${email}`);
                         responseSent = true;
                         return res.json({
                             status: 'found',
@@ -101,31 +117,33 @@ class EmailController {
                         });
                     }
 
-                    // Se não for o último e a conexão estiver viva, aguarda 13s para respeitar o limite
+                    // Throttling: Aguarda 13s entre tentativas (Regra Hostinger)
+                    // Não aguarda se for a última tentativa
                     if (i < permutations.length - 1 && !responseSent && !req.closed) {
-                        console.log(`[Throttling] Aguardando 13s para próxima tentativa...`);
+                        console.log(`[Throttling] ⏳ Aguardando 13s...`);
                         await this.delay(13000);
                     }
 
                 } catch (innerError) {
-                    console.error(`[SMTP] Erro durante verificação de ${email}:`, innerError.message);
+                    console.error(`[SMTP Loop] Erro ao testar ${email}:`, innerError.message);
+                    // Em caso de erro de conexão, também respeitamos o delay para não parecer ataque
                     if (i < permutations.length - 1 && !req.closed) await this.delay(13000);
                 }
             }
 
-            // 3. Fallback se nada for encontrado
+            // 7. Fallback (Nenhum e-mail encontrado)
             if (!responseSent && !req.closed) {
                 responseSent = true;
-                console.log(`[EmailController] Nenhum e-mail validado para ${targetDomain}.`);
+                console.log(`[EmailController] 🏁 Fim do loop. Nenhum e-mail válido encontrado.`);
                 return res.json({
                     status: 'not_found',
-                    action: 'schedule_night_batch',
+                    action: 'schedule_night_batch', // Sugestão para futuro
                     metadata: { target_domain: targetDomain, reason: 'smtp_rejected_all_permutations' }
                 });
             }
 
         } catch (error) {
-            console.error('[EmailController] Erro crítico no processo de enrichment:', error);
+            console.error('[EmailController] 💥 Erro Crítico:', error);
             if (!responseSent && !res.headersSent) {
                 responseSent = true;
                 return res.status(500).json({ error: 'Internal Server Error', details: error.message });
@@ -133,6 +151,7 @@ class EmailController {
         }
     }
 
+    // Utilitário de Delay Promificado
     delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 }
 
