@@ -6,56 +6,57 @@ class EmailController {
     /**
      * Processo de Enriquecimento de Email com Throttling (Hostinger Friendly)
      * Rota: POST /api/enrich/email
-     * * Changelog V2.2:
-     * - Adicionado suporte a 'companyName' (Busca automática de domínio via Clearbit).
-     * - Mantido Throttling de 13s.
+     * * Changelog V2.2.1:
+     * - Fix: Implementado monitoramento de 'req.closed' para evitar Write After End.
+     * - Fix: Garantia de resposta única com flag 'responseSent'.
+     * - Fix: Abortagem imediata do loop de 13s caso o cliente desconecte.
      */
     enrich = async (req, res) => {
-        try {
-            // Aceita domain OU companyName
-            const { firstName, lastName, domain, companyName } = req.body;
+        let responseSent = false;
 
-            // 1. Resolução de Domínio (Lógica Inteligente)
+        // Handler para detectar se o cliente (n8n/browser) cancelou a requisição
+        req.on('close', () => {
+            if (!responseSent) {
+                console.warn('[EmailController] Cliente desconectou prematuramente. Abortando processamento.');
+                responseSent = true; 
+            }
+        });
+
+        try {
+            const { firstName, lastName, domain, companyName } = req.body;
             let targetDomain = domain;
 
-            // Se não veio domínio, mas veio o nome da empresa, tentamos descobrir
+            // 1. Resolução de Domínio
             if (!targetDomain && companyName) {
-                console.log(`[EmailController] Domínio ausente. Buscando Clearbit para: "${companyName}"...`);
+                console.log(`[EmailController] Buscando domínio Clearbit: "${companyName}"...`);
                 targetDomain = await clearbitService.findDomain(companyName);
-                
-                if (targetDomain) {
-                    console.log(`[EmailController] Domínio descoberto: ${targetDomain}`);
-                }
             }
 
-            // Validação Final: Se depois de tentar descobrir, ainda não temos domínio, paramos.
+            // Validação de entrada
             if (!firstName || !lastName || !targetDomain) {
+                responseSent = true;
                 return res.status(400).json({ 
-                    error: 'Missing parameters. Required: firstName, lastName AND (domain OR companyName)',
-                    details: !targetDomain && companyName ? `Could not resolve domain for company: ${companyName}` : undefined
+                    error: 'Missing parameters',
+                    details: !targetDomain && companyName ? `Domain not found for: ${companyName}` : undefined
                 });
             }
 
-            console.log(`[EmailController] Iniciando descoberta para: ${firstName} ${lastName} em ${targetDomain}`);
-
-            // 2. Geração de Permutações (Limitado a 5 pelo PermutatorService)
             const permutations = permutatorService.generate(firstName, lastName, targetDomain);
             
-            if (permutations.length === 0) {
-                return res.status(400).json({ error: 'Invalid input data for permutation' });
-            }
-
-            // 3. Loop de Verificação com Delay (Throttling)
+            // 2. Loop de Verificação com Proteção contra Socket Fechado
             for (let i = 0; i < permutations.length; i++) {
+                // Se a resposta já foi enviada ou o cliente desconectou, sai do loop
+                if (responseSent || req.closed) break;
+
                 const email = permutations[i];
                 console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
 
                 try {
-                    // Chama a função correta do serviço SMTP
                     const isValid = await smtpService.verifyEmailSMTP(email);
 
-                    if (isValid) {
+                    if (isValid && !responseSent && !req.closed) {
                         console.log(`[SMTP] SUCESSO! Encontrado: ${email}`);
+                        responseSent = true;
                         return res.json({
                             status: 'found',
                             data: {
@@ -68,46 +69,39 @@ class EmailController {
                         });
                     }
 
-                    // Se não é válido e não é o último, aplica o delay obrigatório da Hostinger
-                    // 5 requisições/min = 1 req a cada 12s. Usamos 13s para margem de segurança.
-                    if (i < permutations.length - 1) {
-                        console.log(`[Throttling] Aguardando 13s para evitar bloqueio da Hostinger...`);
+                    // Throttling: Só aguarda se não for o último e se a conexão ainda estiver ativa
+                    if (i < permutations.length - 1 && !responseSent && !req.closed) {
+                        console.log(`[Throttling] Aguardando 13s...`);
                         await this.delay(13000);
                     }
 
                 } catch (innerError) {
-                    console.error(`[SMTP] Erro ao testar ${email}:`, innerError.message);
-                    // Em caso de erro de conexão, mantém o delay por segurança
-                    if (i < permutations.length - 1) await this.delay(13000);
+                    console.error(`[SMTP] Erro em ${email}:`, innerError.message);
+                    if (i < permutations.length - 1 && !req.closed) await this.delay(13000);
                 }
             }
 
-            // 4. Fallback - Nenhum encontrado nas 5 tentativas principais
-            console.log(`[EmailController] Nenhum email válido encontrado nas permutações principais.`);
-            return res.json({
-                status: 'not_found',
-                action: 'schedule_night_batch',
-                metadata: {
-                    target_domain: targetDomain,
-                    tested_permutations: permutations,
-                    reason: 'smtp_rejected_all'
-                }
-            });
+            // 3. Fallback Final (Se o loop acabar sem sucesso e a conexão persistir)
+            if (!responseSent && !req.closed) {
+                responseSent = true;
+                console.log(`[EmailController] Nenhum email válido encontrado.`);
+                return res.json({
+                    status: 'not_found',
+                    action: 'schedule_night_batch',
+                    metadata: { target_domain: targetDomain, reason: 'smtp_rejected_all' }
+                });
+            }
 
         } catch (error) {
             console.error('[EmailController] Erro crítico:', error);
-            if (!res.headersSent) {
+            if (!responseSent && !res.headersSent) {
+                responseSent = true;
                 return res.status(500).json({ error: 'Internal Server Error', details: error.message });
             }
         }
     }
 
-    /**
-     * Helper para pausar a execução (Promisified Timeout)
-     */
-    delay = (ms) => {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
+    delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 }
 
 module.exports = new EmailController();
