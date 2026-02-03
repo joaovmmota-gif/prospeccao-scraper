@@ -34,8 +34,8 @@ class EmailController {
                 console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
 
                 try {
-                    // Verifica o email na porta 25
-                    const isValid = await smtpService.verify(email);
+                    // CORREÇÃO: Chamando o nome correto da função conforme smtp.service.js
+                    const isValid = await smtpService.verifyEmailSMTP(email);
 
                     if (isValid) {
                         console.log(`[SMTP] SUCESSO! Encontrado: ${email}`);
