@@ -1,92 +1,92 @@
-const { generateEmailCandidates } = require('../services/email/permutator.service');
-const { verifyEmailSMTP } = require('../services/email/smtp.service');
-const { findCompanyDomain } = require('../services/domain/clearbit.service');
+const permutatorService = require('../services/email/permutator.service');
+const smtpService = require('../services/email/smtp.service');
 
-const findEmail = async (req, res) => {
-    // Agora aceita 'companyName' além de 'domain'
-    const { firstName, lastName, domain, companyName } = req.body;
+class EmailController {
+    /**
+     * Processo de Enriquecimento de Email com Throttling (Hostinger Friendly)
+     * Rota: POST /api/enrich/email
+     */
+    async enrich(req, res) {
+        try {
+            const { firstName, lastName, domain } = req.body;
 
-    // Objeto de diagnóstico para o n8n
-    const traceLog = [];
-    const addTrace = (step, status, msg) => traceLog.push({ step, status, msg, timestamp: new Date() });
+            // 1. Validação Básica
+            if (!firstName || !lastName || !domain) {
+                return res.status(400).json({ 
+                    error: 'Missing parameters. Required: firstName, lastName, domain' 
+                });
+            }
 
-    if (!firstName || (!domain && !companyName)) {
-        return res.status(400).json({ 
-            success: false, 
-            error: 'É necessário informar (Nome) E (Domínio OU Nome da Empresa).' 
-        });
+            console.log(`[EmailController] Iniciando descoberta para: ${firstName} ${lastName} em ${domain}`);
+
+            // 2. Geração de Permutações (Limitado a 5)
+            const permutations = permutatorService.generate(firstName, lastName, domain);
+            
+            if (permutations.length === 0) {
+                return res.status(400).json({ error: 'Invalid input data for permutation' });
+            }
+
+            // 3. Loop de Verificação com Delay (Throttling)
+            for (let i = 0; i < permutations.length; i++) {
+                const email = permutations[i];
+                console.log(`[SMTP] Testando (${i + 1}/${permutations.length}): ${email}`);
+
+                try {
+                    // Verifica o email na porta 25
+                    const isValid = await smtpService.verify(email);
+
+                    if (isValid) {
+                        console.log(`[SMTP] SUCESSO! Encontrado: ${email}`);
+                        return res.json({
+                            status: 'found',
+                            data: {
+                                email: email,
+                                method: 'smtp_validation',
+                                confidence: 'high',
+                                attempts: i + 1
+                            }
+                        });
+                    }
+
+                    // Se não é válido e não é o último, aplica o delay obrigatório da Hostinger
+                    // 5 requisições/min = 1 req a cada 12s. Usamos 13s para margem de segurança.
+                    if (i < permutations.length - 1) {
+                        console.log(`[Throttling] Aguardando 13s para evitar bloqueio da Hostinger...`);
+                        await this.delay(13000);
+                    }
+
+                } catch (innerError) {
+                    console.error(`[SMTP] Erro ao testar ${email}:`, innerError.message);
+                    // Em caso de erro de conexão (timeout/refused), continuamos para o próximo
+                    // mas mantemos o delay para segurança
+                    if (i < permutations.length - 1) await this.delay(13000);
+                }
+            }
+
+            // 4. Fallback - Nenhum encontrado nas 5 tentativas principais
+            // Retorna status específico para agendamento noturno (Night Batch)
+            console.log(`[EmailController] Nenhum email válido encontrado nas permutações principais.`);
+            return res.json({
+                status: 'not_found',
+                action: 'schedule_night_batch',
+                metadata: {
+                    tested_permutations: permutations,
+                    reason: 'smtp_rejected_all'
+                }
+            });
+
+        } catch (error) {
+            console.error('[EmailController] Erro crítico:', error);
+            return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+        }
     }
 
-    try {
-        console.log(`[EMAIL FINDER] Iniciando processo para ${firstName}...`);
-        addTrace('init', 'ok', 'Processo iniciado.');
-
-        // 1. Descoberta de Domínio (Se não foi passado)
-        let targetDomain = domain;
-        
-        if (!targetDomain && companyName) {
-            addTrace('domain_discovery', 'running', `Buscando domínio para "${companyName}"...`);
-            targetDomain = await findCompanyDomain(companyName);
-            
-            if (targetDomain) {
-                addTrace('domain_discovery', 'success', `Domínio encontrado: ${targetDomain}`);
-            } else {
-                addTrace('domain_discovery', 'failed', 'Nenhum domínio com MX válido encontrado.');
-                return res.json({ success: false, stage: 'domain_discovery', trace: traceLog, message: 'Domínio da empresa não encontrado.' });
-            }
-        } else {
-            addTrace('domain_discovery', 'skipped', `Domínio fornecido manualmente: ${targetDomain}`);
-        }
-
-        // 2. Normalização e Permutação
-        const candidates = generateEmailCandidates(firstName, lastName, targetDomain);
-        addTrace('permutation', 'ok', `Gerados ${candidates.length} candidatos.`);
-        console.log(`[EMAIL FINDER] Candidatos:`, candidates);
-
-        let foundEmail = null;
-
-        // 3. Validação SMTP Serial (Respeitando Rate Limits)
-        for (const email of candidates) {
-            console.log(`[SMTP] Testando: ${email}...`);
-            
-            // Pausa de segurança (Throttling) - 5 segundos entre requests para não bloquear na Hostinger
-            // Se for muito lento, o n8n aguenta o timeout.
-            if (candidates.indexOf(email) > 0) {
-                await new Promise(r => setTimeout(r, 5000)); 
-            }
-
-            const exists = await verifyEmailSMTP(email);
-            
-            if (exists) {
-                addTrace('smtp_check', 'success', `E-mail validado: ${email}`);
-                foundEmail = email;
-                break; // Achou! Para tudo.
-            } else {
-                addTrace('smtp_check', 'invalid', `Recusado: ${email}`);
-            }
-        }
-
-        if (foundEmail) {
-            res.json({ 
-                success: true, 
-                email: foundEmail, 
-                domain: targetDomain,
-                status: 'valid',
-                trace: traceLog
-            });
-        } else {
-            res.json({ 
-                success: false, 
-                domain: targetDomain,
-                message: 'Nenhum e-mail válido encontrado nas permutações.',
-                trace: traceLog
-            });
-        }
-
-    } catch (error) {
-        console.error('[EMAIL FINDER ERROR]', error);
-        res.status(500).json({ success: false, error: error.message, trace: traceLog });
+    /**
+     * Helper para pausar a execução (Promisified Timeout)
+     */
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
-};
+}
 
-module.exports = { findEmail };
+module.exports = new EmailController();
